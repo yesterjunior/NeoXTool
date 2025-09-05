@@ -7,8 +7,10 @@ from key import Keys
 def readuint32(f):
     return struct.unpack('I', f.read(4))[0]
 
+
 def readuint8(f):
     return struct.unpack('B', f.read(1))[0]
+
 
 def get_ext(data):
     if len(data) == 0:
@@ -104,62 +106,76 @@ def unpack(path, statusBar=None):
                 crc = readuint32(tmp)
                 file_flag = readuint32(tmp)
                 index_table.append((
-                    file_offset, 
+                    file_sign,
+                    file_offset,
                     file_length,
-                    file_original_length, 
+                    file_original_length,
                     crc,
                     file_flag,
-                    ))
+                ))
 
-        for i, item in enumerate(index_table):
-            if i % 20 == 0 and statusBar != None:
-                statusBar.showMessage('{} / {}'.format(i, files))
-            file_name = '{:8}.dat'.format(i)
-            file_offset, file_length, file_original_length, crc, file_flag = item
-            f.seek(file_offset)
-            data = f.read(file_length)
-            if pkg_type:
-                data = keys.decrypt(data)
-            
-            zflag = file_flag & 0xFFFF # zlib lz44
-            file_flag = file_flag >> 16
+        # === 性能优化：在循环外打开 manifest.txt 文件 ===
+        manifest_path = os.path.join(folder_path, 'manifest.txt')
+        with open(manifest_path, 'w', encoding='utf-8') as manifest:
+            for i, item in enumerate(index_table):
+                if i % 20 == 0 and statusBar != None:
+                    statusBar.showMessage('{} / {}'.format(i, files))
 
-            if file_flag == 3:
-                b = crc ^ file_original_length
+                file_sign, file_offset, file_length, file_original_length, crc, file_flag = item
+                f.seek(file_offset)
+                data = f.read(file_length)
+                if pkg_type:
+                    data = keys.decrypt(data)
 
-                start = 0
-                size = file_length
-                if size > 0x80:
-                    start = (crc >> 1) % (file_length - 0x80)
-                    size = 2 * file_original_length % 0x60 + 0x20
-                
-                key = [(x + b) & 0xFF for x in range(0, 0x100)]
-                data = bytearray(data)
-                for j in range(size):
-                    data[start + j] = data[start + j] ^ key[j % len(key)]
-            
-            if zflag == 1:
-                data = zlib.decompress(data)
+                zflag = file_flag & 0xFFFF  # zlib lz44
+                file_flag = file_flag >> 16
 
-            ext = get_ext(data)
-            file_name = '{:08}.{}'.format(i, ext)
-            if True:
+                if file_flag == 3:
+                    b = crc ^ file_original_length
+
+                    start = 0
+                    size = file_length
+                    if size > 0x80:
+                        start = (crc >> 1) % (file_length - 0x80)
+                        size = 2 * file_original_length % 0x60 + 0x20
+
+                    key = [(x + b) & 0xFF for x in range(0, 0x100)]
+                    data = bytearray(data)
+                    for j in range(size):
+                        data[start + j] = data[start + j] ^ key[j % len(key)]
+
+                if zflag == 1:
+                    data = zlib.decompress(data)
+
+                ext = get_ext(data)
+                file_name = '{:08}.{}'.format(i, ext)
+
                 print('{}/{}'.format(i + 1, files))
-                file_path = folder_path + '/' + file_name
+                file_path = os.path.join(folder_path, file_name)
+
                 with open(file_path, 'wb') as dat:
                     dat.write(data)
+
+                # === 性能优化：直接写入，而不是每次都重新打开文件 ===
+                manifest.write(f"{file_sign},{file_name}\n")
+
                 if ext in ['ktx', 'pvr']:
                     os.system('bin\\PVRTexToolCLI.exe -i {} -d -f r8g8b8a8'.format(file_path))
+
+        # 循环结束后，manifest.txt 会被 with 语句自动关闭
+
         os.system('del {}\\*.ktx'.format(folder_path))
         os.system('del {}\\*.pvr'.format(folder_path))
         if statusBar != None:
-                statusBar.showMessage('Unpack completed!')
+            statusBar.showMessage('Unpack completed!')
+
 
 def get_parser():
     parser = argparse.ArgumentParser(description='EXPK Extractor')
     parser.add_argument('path', type=str)
     opt = parser.parse_args()
     return opt
+
 
 def main():
     opt = get_parser()
