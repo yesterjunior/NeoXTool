@@ -5,7 +5,7 @@ import argparse
 
 
 def read_uint32(f):
-    """从文件对象中读取一个32位无符号整数"""
+    """从文件对象中读取一个32位无符号整数（小端序）"""
     return struct.unpack('<I', f.read(4))[0]
 
 
@@ -47,19 +47,21 @@ def get_ext(data):
     return 'dat'
 
 
-def unpack(filepath):
+def unpack(input_filepath, output_dir):
     """
-    根据新的数据结构解包文件。
-    - 文件头 (4字节): 文件总数
-    - 索引表 (文件总数 * 20字节): 每个条目包含哈希、偏移、压缩大小、原始大小、CRC
-    - 数据块: zlib压缩
+    根据新的数据结构解包单个文件，并将其放入指定的输出目录。
     """
-    # 创建输出目录，以"_unpacked"为后缀
-    folder_path = filepath + '_unpacked'
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
+    print("-" * 50)
+    print(f"开始处理文件: {os.path.basename(input_filepath)}")
 
-    with open(filepath, 'rb') as f:
+    # 在指定的输出目录内，为当前文件创建一个独立的子目录
+    base_filename = os.path.basename(input_filepath)
+    output_subfolder = os.path.join(output_dir, f"{base_filename}_unpacked")
+
+    # 使用 exist_ok=True，如果目录已存在则不会引发错误
+    os.makedirs(output_subfolder, exist_ok=True)
+
+    with open(input_filepath, 'rb') as f:
         # 1. 读取文件头：获取文件总数
         try:
             file_count = read_uint32(f)
@@ -93,64 +95,60 @@ def unpack(filepath):
         print(f"找到 {len(index_table)} 个文件条目。开始提取...")
 
         # 3. 提取文件数据
-        manifest_path = os.path.join(folder_path, 'manifest.txt')
+        manifest_path = os.path.join(output_subfolder, 'manifest.txt')
         with open(manifest_path, 'w', encoding='utf-8') as manifest:
             for i, item in enumerate(index_table):
-                # 移动到数据偏移位置并读取压缩数据
                 f.seek(item["offset"])
                 compressed_data = f.read(item["comp_size"])
 
-                # 检查读取的数据长度是否与索引中记录的一致
                 if len(compressed_data) != item["comp_size"]:
                     print(f"警告：文件 {i} ({item['hash']}) 的数据块不完整。跳过。")
                     continue
 
-                # 解压缩数据 (所有文件都使用zlib)
                 try:
-                    # 如果原始大小为0，则无需解压
-                    if item["orig_size"] == 0:
-                        original_data = b''
-                    else:
-                        original_data = zlib.decompress(compressed_data)
+                    original_data = zlib.decompress(compressed_data) if item["orig_size"] > 0 else b''
                 except zlib.error as e:
                     print(f"错误：文件 {i} ({item['hash']}) zlib解压失败: {e}。跳过。")
                     continue
 
-                # 获取文件扩展名并生成文件名
                 ext = get_ext(original_data)
                 file_name = f'{i:08d}.{ext}'
-                file_path = os.path.join(folder_path, file_name)
-
-                print(f'[{i + 1}/{file_count}] 正在提取 -> {file_name}')
+                file_path = os.path.join(output_subfolder, file_name)
 
                 # 写入解压后的数据
                 with open(file_path, 'wb') as out_file:
                     out_file.write(original_data)
 
-                # 写入清单文件，记录文件哈希与文件名的对应关系
                 manifest.write(f'{item["hash"]},{file_name}\n')
 
-                # (可选) 如果需要，可以重新启用旧的纹理转换逻辑
-                # if ext in ['ktx', 'pvr']:
-                #     os.system(f'bin\\PVRTexToolCLI.exe -i {file_path} -d -f r8g8b8a8')
-
-    # (可选) 清理转换后的临时文件
-    # os.system(f'del {folder_path}\\*.ktx')
-    # os.system(f'del {folder_path}\\*.pvr')
-
-    print(f"\n提取完成！文件已保存至目录: {folder_path}")
+    print(f"提取完成！文件已保存至目录: {output_subfolder}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='通用文件解包工具 (新数据结构)')
-    parser.add_argument('path', type=str, help='需要解包的文件路径。')
+    parser = argparse.ArgumentParser(description='通用文件解包工具 - 文件夹批量处理')
+    parser.add_argument('input_directory', type=str, help='包含待解包文件的输入文件夹路径。')
+    parser.add_argument('output_directory', type=str, help='用于存放所有解包后文件的输出文件夹路径。')
     args = parser.parse_args()
 
-    if not os.path.exists(args.path):
-        print(f"错误：文件 '{args.path}' 不存在。")
+    # 检查输入路径是否存在且为文件夹
+    if not os.path.isdir(args.input_directory):
+        print(f"错误：输入路径 '{args.input_directory}' 不是一个有效的文件夹。")
         return
 
-    unpack(args.path)
+    print(f"输入文件夹: {args.input_directory}")
+    print(f"输出文件夹: {args.output_directory}")
+
+    # 遍历输入文件夹中的所有项目
+    for filename in os.listdir(args.input_directory):
+        input_filepath = os.path.join(args.input_directory, filename)
+
+        # 确保处理的是文件而不是子目录
+        if os.path.isfile(input_filepath):
+            unpack(input_filepath, args.output_directory)
+        else:
+            print(f"跳过子目录: {filename}")
+
+    print("\n所有文件处理完毕。")
 
 
 if __name__ == '__main__':
